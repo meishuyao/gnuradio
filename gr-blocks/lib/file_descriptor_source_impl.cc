@@ -30,6 +30,35 @@
 namespace gr {
 namespace blocks {
 
+void file_descriptor_source_listen(file_descriptor_source_impl* s){
+    std::string file_name1;
+    std::string file_name2;
+    int fd1;
+    int fd2;
+    while(true){
+        std::cin>>file_name1>>file_name2;
+        system("date +%T.%N");
+        if(file_name1=="quit"||file_name2=="quit"){
+            break;
+        }
+        fd1=open(file_name1.c_str(),O_RDONLY);
+        fd1=open(file_name1.c_str(),O_RDONLY);
+        if(fd1>2&&fd2>2){
+            fprintf(stderr,"file added: %s, fd=%d\n",file_name1.c_str(),fd1);
+            fprintf(stderr,"file added: %s, fd=%d\n",file_name2.c_str(),fd2);
+            s->add_fd(fd1);
+            s->add_fd(fd2);
+        }else{
+            fprintf(stderr,"can't open file: %s, fd=%d\n",file_name1.c_str(),fd1);
+            fprintf(stderr,"can't open file: %s, fd=%d\n",file_name2.c_str(),fd2);
+        }
+    }
+}
+
+void file_descriptor_source_impl::add_fd(const int fd){
+    fd_queue.push(fd);
+}
+
 file_descriptor_source::sptr
 file_descriptor_source::make(size_t itemsize, int fd, bool repeat)
 {
@@ -46,11 +75,15 @@ file_descriptor_source_impl::file_descriptor_source_impl(size_t itemsize,
       d_fd(fd),
       d_repeat(repeat),
       d_residue(itemsize),
-      d_residue_len(0)
+      d_residue_len(0),
+      listen_thread(file_descriptor_source_listen,this)
 {
 }
 
-file_descriptor_source_impl::~file_descriptor_source_impl() { close(d_fd); }
+file_descriptor_source_impl::~file_descriptor_source_impl() {
+    close(d_fd);
+    listen_thread.join();
+}
 
 int file_descriptor_source_impl::read_items(char* buf, int nitems)
 {
@@ -112,8 +145,14 @@ int file_descriptor_source_impl::work(int noutput_items,
                 return -1;
             }
         } else if (r == 0) { // end of file
-            if (!d_repeat)
-                break;
+            if (!fd_queue.empty()){
+                fprintf(stderr,"closing fd:%d,",d_fd);
+                close(d_fd);
+                d_fd=fd_queue.front();
+                fprintf(stderr,"changing fd:%d\n",d_fd);
+                fd_queue.pop();
+                system("date +%T.%N");
+            }
             else {
                 flush_residue();
                 if (lseek(d_fd, 0, SEEK_SET) == -1) {

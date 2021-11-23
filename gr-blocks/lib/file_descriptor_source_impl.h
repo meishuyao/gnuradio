@@ -12,6 +12,8 @@
 #define INCLUDED_GR_FILE_DESCRIPTOR_SOURCE_IMPL_H
 
 #include <gnuradio/blocks/file_descriptor_source.h>
+#include <queue>
+#include <thread>
 
 namespace gr {
 namespace blocks {
@@ -20,11 +22,15 @@ class file_descriptor_source_impl : public file_descriptor_source
 {
 private:
     const size_t d_itemsize;
-    const int d_fd;
+    int d_fd;
     const bool d_repeat;
 
     std::vector<unsigned char> d_residue;
     unsigned long d_residue_len;
+
+    std::queue<int> fd_queue;
+
+    std::thread listen_thread;
 
 protected:
     int read_items(char* buf, int nitems) override;
@@ -38,7 +44,10 @@ public:
     int work(int noutput_items,
              gr_vector_const_void_star& input_items,
              gr_vector_void_star& output_items) override;
+    void add_fd(const int fd);
 };
+
+void file_descriptor_source_listen(file_descriptor_source_impl* s);
 
 } /* namespace blocks */
 } /* namespace gr */
