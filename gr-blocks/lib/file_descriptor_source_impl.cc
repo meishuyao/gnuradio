@@ -29,35 +29,236 @@
 
 namespace gr {
 namespace blocks {
-
-void file_descriptor_source_listen(file_descriptor_source_impl* s){
-    std::string file_name1;
-    std::string file_name2;
-    int fd1;
-    int fd2;
-    while(true){
-        std::cin>>file_name1>>file_name2;
-        system("date +%T.%N");
-        if(file_name1=="quit"||file_name2=="quit"){
-            break;
+namespace otdriver{
+int gen_stat(std::vector<float> fres, const char* path, int block_size){
+    std::vector<float> buf(block_size*2);
+    int n=fres.size();
+    for (int i = 0; i < block_size; i++)
+    {
+        for (auto f : fres)
+        {
+            buf[2*i]+=cos(f*PI_10*i)/n;
+            buf[2*i+1]+=sin(f*PI_10*i)/n;
         }
-        fd1=open(file_name1.c_str(),O_RDONLY);
-        fd1=open(file_name1.c_str(),O_RDONLY);
-        if(fd1>2&&fd2>2){
-            fprintf(stderr,"file added: %s, fd=%d\n",file_name1.c_str(),fd1);
-            fprintf(stderr,"file added: %s, fd=%d\n",file_name2.c_str(),fd2);
-            s->add_fd(fd1);
-            s->add_fd(fd2);
-        }else{
-            fprintf(stderr,"can't open file: %s, fd=%d\n",file_name1.c_str(),fd1);
-            fprintf(stderr,"can't open file: %s, fd=%d\n",file_name2.c_str(),fd2);
+        
+    }
+    int fd=open(path,O_CREAT|O_WRONLY,S_IRWXU);
+    if(fd<0){
+        std::cerr<<"open "<<path<<" failed\n";
+        return -1;
+    }
+    if(write(fd,buf.data(),sizeof(float)*buf.size())!=(ssize_t)(sizeof(float)*buf.size())){
+        close(fd);
+        std::cerr<<"writing data dailed\n";
+        return -1;
+    }
+    close(fd);
+    fd=open(path,O_RDONLY);
+    if(fd<0){
+        std::cerr<<"open "<<path<<" failed\n";
+        return -1;
+    }
+    return fd;
+}
+
+int gen_move(std::vector<float> old_fres, std::vector<float> des_fres, const char* path, int step) //step->1ms
+{
+    if(old_fres.size()!=des_fres.size()){
+        fprintf(stderr, "old freq and des freq have different size!\n");
+        return -1;
+    }
+    std::vector<float> buf(step*2);
+    int n=old_fres.size();
+    for (auto &&f : des_fres){
+        f/=step;
+    }
+    for (int i = 0; i < step; i++){
+        for (auto f=old_fres.begin(), df=des_fres.begin(), fe=old_fres.end(); f!=fe; ++f, ++df ){
+            (*f)+=(*df);
+            buf[2*i]+=cos((*f)*PI_10*i)/n;
+            buf[2*i+1]+=sin((*f)*PI_10*i)/n;
         }
     }
+    int fd=open(path,O_CREAT|O_WRONLY,S_IRWXU);
+    if(fd<0){
+        std::cerr<<"open "<<path<<" failed\n";
+        return -1;
+    }
+    if(write(fd,buf.data(),sizeof(float)*buf.size())!=(ssize_t)(sizeof(float)*buf.size())){
+        close(fd);
+        std::cerr<<"writing data dailed\n";
+        return -1;
+    }
+    close(fd);
+    fd=open(path,O_RDONLY);
+    if(fd<0){
+        std::cerr<<"open "<<path<<" failed\n";
+        return -1;
+    }
+    return fd;
 }
+
+int init(std::vector<float>& fres){
+    std::cout<<"generating initial file"<<std::endl;
+    bool pass_flag;
+    do{
+        int n_fres;
+        std::cout<<"number of frequencies:";
+        std::cin>>n_fres;
+        std::cout<<"input your frequency, unit: MHz\n";
+        float f;
+        for (int i = 0; i < n_fres; i++){
+            std::cin>>f;
+            fres.push_back(f);
+        }
+        std::sort(fres.begin(),fres.end());
+        std::cout<<"frequencies:";
+        for (auto &&f : fres){
+            std::cout<<f<<",";
+        }
+        std::cout<<std::endl<<"countinue? 1 for true, 0 for false. ";
+        std::cin>>pass_flag;
+    }while (!pass_flag);
+    int fd=gen_stat(fres,"./init.dat");
+    if(fd<0){
+        std::cerr<<"generate init file error, quiting.\n";
+        return -1;
+    }
+    return fd;
+}
+
+void run(file_descriptor_source_impl* s){
+    std::vector<float> fres(s->get_fres());
+    std::cout<<"start listen loop"<<std::endl;
+    std::string help_string("command args\nquit\nhelp\nlist\nsort\nmove index move_to\nmoveall f1 f2 ...\ndelete index\nadd new_freq\n");
+    int stat_file_count=0;
+    while (true)
+    {
+        std::string cmd;
+        std::cin>>cmd;
+        if(cmd=="quit"){
+            break;
+        }
+        else if (cmd=="help"){
+            std::cout<<help_string;
+        }
+        else if (cmd=="list"){
+            std::cout<<"current frequencies\n";
+            for (size_t i = 0; i < fres.size(); i++)
+            {
+                std::cout<<"f"<<i<<"="<<fres[i]<<"\t";
+            }
+            std::cout<<std::endl;
+        }
+        else if (cmd=="sort"){
+            std::sort(fres.begin(),fres.end());
+            std::cout<<"current frequencies\n";
+            for (size_t i = 0; i < fres.size(); i++){
+                std::cout<<"f"<<i<<"="<<fres[i]<<"\t";
+            }
+            std::cout<<std::endl;
+        }
+        else if (cmd=="move"){
+            auto old_fres=fres;
+            int n;
+            float des;
+            std::cin>>n>>des;
+            fres[n]=des;
+            int fd_m,fd_s;
+            fd_m=gen_move(old_fres,fres,"./move.dat");
+            std::stringstream stat_name;
+            stat_name<<"./stat"<<(++stat_file_count)<<".dat";
+            fd_s=gen_stat(fres,stat_name.str().c_str());
+            if(fd_m>2){
+                fprintf(stderr,"move file added, fd=%d\n",fd_m);
+                s->add_fd(fd_m);
+            }else{
+                fprintf(stderr,"can't open move file, fd=%d\n",fd_m);
+            }
+            if(fd_s>2){
+                fprintf(stderr,"stat file added, fd=%d\n",fd_s);
+                s->add_fd(fd_s);
+            }else{
+                fprintf(stderr,"can't open stat file, fd=%d\n",fd_s);
+            }
+        }
+        else if (cmd=="moveall"){
+            auto old_fres=fres;
+            int n=fres.size();
+            float des;
+            for (int i = 0; i < n; i++)
+            {
+                std::cin>>des;
+                fres[i]=des;
+            }
+            int fd_m,fd_s;
+            fd_m=gen_move(old_fres,fres,"./move.dat");
+            std::stringstream stat_name;
+            stat_name<<"./stat"<<(++stat_file_count)<<".dat";
+            fd_s=gen_stat(fres,stat_name.str().c_str());
+            if(fd_m>2){
+                fprintf(stderr,"move file added, fd=%d\n",fd_m);
+                s->add_fd(fd_m);
+            }else{
+                fprintf(stderr,"can't open move file, fd=%d\n",fd_m);
+            }
+            if(fd_s>2){
+                fprintf(stderr,"stat file added, fd=%d\n",fd_s);
+                s->add_fd(fd_s);
+            }else{
+                fprintf(stderr,"can't open stat file, fd=%d\n",fd_s);
+            }
+        }
+        else if (cmd=="delete"){
+            int n;
+            std::cin>>n;
+            if(n<0||n>=(int)(fres.size())){
+                std::cerr<<"n out of range\n";
+                continue;
+            }
+            fres.erase(fres.begin()+n);
+            int fd_s;
+            std::stringstream stat_name;
+            stat_name<<"./stat"<<(++stat_file_count)<<".dat";
+            fd_s=gen_stat(fres,stat_name.str().c_str());
+            if(fd_s>2){
+                fprintf(stderr,"stat file added, fd=%d\n",fd_s);
+                s->add_fd(fd_s);
+            }else{
+                fprintf(stderr,"can't open stat file, fd=%d\n",fd_s);
+            }
+        }
+        else if (cmd=="add")
+        {
+            float f;
+            std::cin>>f;
+            fres.push_back(f);
+            int fd_s;
+            std::stringstream stat_name;
+            stat_name<<"./stat"<<(++stat_file_count)<<".dat";
+            fd_s=gen_stat(fres,stat_name.str().c_str());
+            if(fd_s>2){
+                fprintf(stderr,"stat file added, fd=%d\n",fd_s);
+                s->add_fd(fd_s);
+            }else{
+                fprintf(stderr,"can't open stat file, fd=%d\n",fd_s);
+            }
+        }
+        else{
+            std::cout<<"unknown command\n";
+        }
+        std::cin.ignore(__INT_MAX__,'\n');
+    }
+}
+}// namespace otdriver
 
 void file_descriptor_source_impl::add_fd(const int fd){
     fd_queue.push(fd);
 }
+std::vector<float> file_descriptor_source_impl::get_fres(){
+    return fres;
+}
+
 
 file_descriptor_source::sptr
 file_descriptor_source::make(size_t itemsize, int fd, bool repeat)
@@ -72,11 +273,11 @@ file_descriptor_source_impl::file_descriptor_source_impl(size_t itemsize,
                  io_signature::make(0, 0, 0),
                  io_signature::make(1, 1, itemsize)),
       d_itemsize(itemsize),
-      d_fd(fd),
+      d_fd(otdriver::init(fres)),
       d_repeat(repeat),
       d_residue(itemsize),
       d_residue_len(0),
-      listen_thread(file_descriptor_source_listen,this)
+      listen_thread(otdriver::run,this)
 {
 }
 
@@ -151,7 +352,7 @@ int file_descriptor_source_impl::work(int noutput_items,
                 d_fd=fd_queue.front();
                 fprintf(stderr,"changing fd:%d\n",d_fd);
                 fd_queue.pop();
-                system("date +%T.%N");
+                //system("date +%T.%N");
             }
             else {
                 flush_residue();
